@@ -47,34 +47,34 @@ program in both versions.**
 - `java lemoine_sequential_v1 1000001 1999999`
 
 $Output >>
-            1746551 = 1237 + 2 * 872657
             
-            1.468 seconds
+            1746551 = 1237 + 2 * 872657
+            Time: 1.468 seconds
 
 2. Parallel version 1:
 - `java -jar <<location of the omp4j jarfile>> lemoine_omp_v1.java Prime.java`
 - `java lemoine_omp_v1 1000001 1999999`
 
 $Output >>
+            
             1746551 = 1237 + 2 * 872657
-
-            1.92 seconds
+            Time: 1.92 seconds
 
 3. Sequential version 2:
 - `javac lemoine_sequential_v2.java`
 - `java lemoine_sequential_v2 1000001 1999999`
 
 $Output >>
+            
             1746551 = 1237 + 2 * 872657
-
-            204.405 seconds
+            Time: 204.405 seconds
 
 4. Parallel version 2:
 - `java -jar <<location of the omp4j jarfile>> lemoine_omp_v2.java Prime.java`
 - `java lemoine_omp_v2 1000001 1999999`
 
 $Output >>
+            
             1746551 = 1237 + 2 * 872657
-
-            6.755 seconds
+            Time: 6.755 seconds
 
