@@ -47,8 +47,3 @@ the best accuracy is saved for our block generation task. The current best predi
     - `mpijavac -cp <<path to mpi.jar>> opencbs.java MyTimer.java`
 - Run with:
     - `mpirun --hostfile <<path to hostfile.txt>> --prefix /usr/local java -cp <<path to mpi.jar>> opencbs`
-
-## Acknowledgement
-Special thanks to *Dr Peizhao Hu* for his guidance, as well as key contribution leading to lines of codes in the java files contained in this repository.
-
-
