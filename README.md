@@ -1,7 +1,7 @@
 # Open Comprehensive Blockchain Simulator
 
 ## Description
-**OpenCBS** is a parallel computing project aiming at simulating distributed tasks
+**OpenCBS** is a parallel computing project (Work In Progress) aiming at simulating distributed tasks
 such as Bitcoin mining. This implementation employs a Message Passing Interface MPI approach
 to distribute nonce computation jobs to workers. We enforce collective communication
 throughout the mining by setting every worker to update the master once its finds a valid nonce,
