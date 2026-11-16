@@ -1,0 +1,8 @@
+program,n
+nvidia-smi,14331
+nsys,1136
+nvcc,182
+ncu,175
+cuobjdump,113
+torchrun,31
+accelerate,16

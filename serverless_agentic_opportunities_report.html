@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GPU Tools of LLM Agents on Shared Platforms — Research Brief v0.4</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 1000px; margin: 2rem auto; padding: 0 1.2rem; line-height: 1.5; color: #1d1d1f; }
+  h1 { font-size: 1.55rem; margin-bottom: .2rem; }
+  h2 { border-bottom: 2px solid #d5d9e6; padding-bottom: .2rem; margin-top: 2.2rem; font-size: 1.25rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.4rem; }
+  .meta { color: #666; font-size: .85rem; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0 1rem; font-size: .86rem; }
+  th, td { border: 1px solid #d5d9e6; padding: .3rem .45rem; vertical-align: top; text-align: left; }
+  th { background: #f0f2f8; }
+  .box { border-left: 4px solid #3b6bd6; background: #f5f8ff; padding: .5rem 1rem; margin: .8rem 0; }
+  .principle { border-left: 4px solid #2e8b57; background: #f2faf5; padding: .5rem 1rem; margin: .8rem 0; }
+  .risk { border-left: 4px solid #c43b3b; background: #fff4f4; padding: .5rem 1rem; margin: .8rem 0; }
+  figure { margin: 1rem 0 1.4rem; }
+  figcaption { font-size: .82rem; color: #555; margin-top: .3rem; }
+  svg { width: 100%; height: auto; font-family: inherit; }
+  details { margin: .6rem 0; } summary { cursor: pointer; font-weight: 600; }
+  ol.refs li { font-size: .82rem; margin-bottom: .2rem; }
+  code { background: #f2f2f2; padding: 0 .2rem; border-radius: 3px; }
+  sup { font-size: .7rem; }
+</style>
+</head>
+<body>
+
+<h1>GPU Tools of LLM Agents on Shared Platforms</h1>
+<p class="meta">Research brief v0.4, 16 Nov 2026 · target: ACM ICS'27 (or HPDC'27 / SC27)<br>
+Bracketed numbers [n] cite the references at the end. Numbers carry their sources' conditions. † = found by search, not read in full. [INF] = our inference, not a measured fact.</p>
+
+<div class="box">
+<b>Summary</b>
+<ol>
+<li><b>Setting.</b> LLM agents run tools; some tools need a GPU (compile and time a kernel, run an ML potential, train a model). The LLM is a remote API. The GPU tools run on a platform owned by an operator: an HPC facility, an agent-sandbox service, or an RL/eval cluster [1][2][4].</li>
+<li><b>Problem.</b> Operators either reserve a GPU per agent session (GPU busy 3.4% of the session [1]; a 128-GPU exclusive pool [2]) or share GPUs naively. Naive sharing distorts what the agent observes: timings, OOM kills, success rates [1][21][22].</li>
+<li><b>Thesis.</b> For agent tools, the platform's resource policy is <i>part of the experiment the agent runs</i>. Policy changes what the agent observes, which changes what it does, which changes how much GPU it asks for and whether it succeeds. Classic serverless and HPC scheduling assume demand does not depend on the scheduler.</li>
+<li><b>Contributions (to be established):</b>
+  <ul>
+    <li><b>C1</b>: measure this loop for GPU tools.</li>
+    <li><b>C2</b>: judge platforms by GPU-seconds and joules <i>per solved task</i>.</li>
+    <li><b>C3</b>: an admission policy that shares and parks GPUs only while the agent's observations stay intact. Its capacity is then set by HBM headroom and memory-tier bandwidth, which is the link to the memory/storage portfolio.</li>
+  </ul></li>
+<li><b>Not ours</b> (§3):
+  <ul>
+    <li>releasing GPUs between interactive steps [9][10];</li>
+    <li>parking state while the LLM thinks [11][12];</li>
+    <li>GPU suspend, swap and checkpoint/restore [14]–[20];</li>
+    <li>timing distortion under sharing [1];</li>
+    <li>infrastructure changing agent outcomes [21];</li>
+    <li>OOM-aware scheduling of agent tools [22].</li>
+  </ul></li>
+<li><b>Status.</b> Scripts for five studies are ready (<code>motivation/</code>). One pair of runs (experiment M5) decides whether the thesis holds. ICS'27 paper deadline: 7 Dec 2026.</li>
+</ol>
+</div>
+
+<!-- ====================================================== -->
+<h2>1. Background</h2>
+
+<h3>1.1 How agents execute GPU tools in production</h3>
+<p>The LLM never runs code. It returns a tool call (e.g., <code>bash: python bench.py</code>); the <b>harness</b> (Claude Code, Codex, oh-my-pi, ChemGraph) executes it and feeds the output back as the next prompt. A "GPU tool" is any command whose code uses a GPU, so it runs wherever the harness sends it:</p>
+<ul>
+  <li>the harness's own machine;</li>
+  <li>a Slurm job;</li>
+  <li>a remote GPU service reached by <code>ssh</code>, a CLI or HTTP;</li>
+  <li>an MCP server on a GPU host.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Where agent GPU tools execute">
+  <defs><marker id="a1" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#444"/></marker></defs>
+  <g font-size="12">
+  <rect x="20" y="20" width="250" height="90" rx="8" fill="#eef2fb" stroke="#3b6bd6"/>
+  <text x="34" y="42" font-weight="600">Agent harness</text><text x="34" y="62">laptop · HPC login node · cloud sandbox</text><text x="34" y="80">executes every tool call</text><text x="34" y="98" fill="#555">sees: tool start/end, LLM request/reply</text>
+  <rect x="690" y="20" width="250" height="90" rx="30" fill="#f3f3f3" stroke="#888" stroke-dasharray="5 3"/>
+  <text x="708" y="46" font-weight="600">LLM provider (remote, opaque)</text><text x="708" y="66">vendor API, or vLLM / Dynamo elsewhere</text><text x="708" y="86" fill="#666">no access to its KV cache or GPUs</text>
+  <line x1="270" y1="50" x2="688" y2="50" stroke="#888" marker-end="url(#a1)"/><line x1="688" y1="72" x2="272" y2="72" stroke="#888" marker-end="url(#a1)"/>
+  <text x="330" y="44" fill="#555">prompt (incl. tool results) → reply with tool call; median 4.6 s [6]</text>
+  <line x1="145" y1="110" x2="145" y2="168" stroke="#444" marker-end="url(#a1)"/>
+  <text x="155" y="140">GPU tool call via Slurm · ssh · remote-exec service · MCP</text>
+  <rect x="20" y="170" width="920" height="140" rx="10" fill="none" stroke="#999" stroke-dasharray="6 4"/>
+  <text x="34" y="190" fill="#555" font-weight="600">Tool platform owned by an operator (HPC facility, sandbox service, RL/eval cluster) — the subject of this work</text>
+  <rect x="40" y="202" width="300" height="94" rx="8" fill="#fafbfe" stroke="#3b6bd6"/>
+  <text x="54" y="222" font-weight="600">GPU pool</text><text x="54" y="242">many agents' tool calls</text><text x="54" y="260">sharing / parking / exclusive windows</text><text x="54" y="280" fill="#555">today: GPU per session, or naive sharing</text>
+  <rect x="360" y="202" width="300" height="94" rx="8" fill="#fafbfe" stroke="#5a7fd8"/>
+  <text x="374" y="222" font-weight="600">Memory tiers for warm tool state</text><text x="374" y="242">HBM → Grace LPDDR5X (C2C) / host DDR</text><text x="374" y="260">→ NVMe</text>
+  <rect x="680" y="202" width="240" height="94" rx="8" fill="#fafbfe" stroke="#888"/>
+  <text x="694" y="222" font-weight="600">CPU workers</text><text x="694" y="242">compile, imports,</text><text x="694" y="260">CPU-only tools</text>
+  </g>
+</svg>
+<figcaption>Figure 1. Production setting. On the Harvard cluster, harnesses run on login nodes and call vendor APIs; agents account for 55.8% of jobs and 42.7% of GPU-hours [4]. Kernel-agent platforms send GPU verification and profiling to shared pools [1][2][3]. A single user running tools on their own GPU is out of scope: there is nothing to share.</figcaption>
+</figure>
+
+<h3>1.2 Why a shared, serverless-style platform at all</h3>
+<div class="principle"><b>Principle.</b> Serverless pays off when (i) many clients share a finite resource, (ii) each client uses it in short bursts with long idle gaps, and (iii) the platform can release the resource during the gaps without losing the client's state. Bare metal (a dedicated GPU per user) is simpler and wins whenever (i) or (ii) is false.</div>
+<p>Public traces show that agent tool use satisfies (ii). TraceLab (52 developers, 8.1k sessions) [5] and FreeInference (267 accounts, 14 harnesses) [6] give:</p>
+<ul>
+  <li>a median idle gap of 4–6 s between consecutive tool calls;</li>
+  <li>a median tool busy share of 23% of a session's active time;</li>
+  <li>GPU busy 3.4% of a session on a production kernel-agent platform [1].</li>
+</ul>
+<figure>
+<img src="motivation/figures/public_traces_idle.png" alt="Idle windows between tool calls and tool busy share per session" style="width:100%">
+<figcaption>Figure 2. Our analysis of TraceLab [5] and FreeInference [6] (<code>motivation/public_traces/analyze.py</code>). Human turns are excluded.
+<ul>
+  <li><b>Idle gaps</b> between tool calls: 92% (TraceLab) and 73% (FreeInference) are ≥ 2 s.</li>
+  <li><b>Busy share:</b> 29% of sessions run a tool &lt; 5% of their active time.</li>
+  <li><b>Caveat:</b> GPU tool calls are rare in these coding traces: 3.2% / 0.08% of shell calls. GPU-specific behaviour must be measured (§4).</li>
+</ul></figcaption>
+</figure>
+<p><b>This argument is already published</b> for agents and notebooks [7][8][9][10], so "agents are bursty, therefore serverless" is background, not a contribution.</p>
+
+<h3>1.3 Where the original GeFaaS draft stands</h3>
+<p>The 2022 draft (OpenWhisk, MPS sharing, rCUDA remote GPUs, memory-aware placement) is superseded mechanism by mechanism:</p>
+<ul>
+  <li>MPS sharing for functions: FaST-GShare [27];</li>
+  <li>remote GPUs for functions: DGSF [28];</li>
+  <li>memory-aware model placement and swapping: Torpor [17];</li>
+  <li>cold-start reduction: ServerlessLLM [23], Medusa [29].</li>
+</ul>
+<p>What carries over is the design instinct: split CPU from GPU phases, place by declared GPU memory, share by priority.</p>
+
+<!-- ====================================================== -->
+<h2>2. Motivation: the dilemma operators face</h2>
+<table>
+<tr><th>How the operator runs agent GPU tools</th><th>GPU utilization</th><th>What the agent observes</th><th>Evidence</th></tr>
+<tr><td>Dedicated GPU per session (bare metal)</td><td>very low (3.4% [1])</td><td>clean</td><td>KREX [1], CUDA Agent's 128 exclusive GPUs [2], KCoral's exclusive GPU stages [3]</td></tr>
+<tr><td>Uncontrolled sharing</td><td>high</td><td><b>distorted</b>: timing noise misleads kernel search; OOM kills; resource limits change success and strategy</td><td>[1], [22], [21]</td></tr>
+<tr><td>Job per call (Slurm)</td><td>high</td><td>clean, but queueing and cold starts on every call</td><td>scheduler pressure from agents [4]</td></tr>
+<tr><td>Naive serverless (keep-alive, packing, snapshot restore)</td><td>high</td><td>distorted unless restore stays hidden and memory headroom is kept [INF]</td><td>not yet measured for GPU tools: experiment M5 (§4)</td></tr>
+</table>
+<div class="principle"><b>Principle.</b> In classic serverless the trade-off is utilization against latency: a cold start makes a request slower but does not change its answer. For agent tools, the trade-off is utilization against <b>observation fidelity</b>. Sharing can change the tool's <i>output</i> (a slower timing, an OOM error, a timeout), and the output is the agent's next input.</div>
+
+<!-- ====================================================== -->
+<h2>3. What is already known (not our contribution)</h2>
+<table>
+<tr><th>Idea</th><th>Prior work</th><th>How it bounds our claims</th></tr>
+<tr><td>Release the GPU between interactive steps; prepare state during think time</td><td>LooseLeaf [9] (notebooks; prepares state while the user edits; 32–55% fewer GPU-hours), NotebookOS [10]</td><td>We do not claim idle-GPU reclamation for interactive work</td></tr>
+<tr><td>Checkpoint or park state while the LLM is thinking</td><td>Crab [11] (overlaps C/R with LLM wait; &gt;75% of turns have no recovery-relevant state), DeltaBox [12] (hides its dump in the LLM I/O window); both CPU sandboxes</td><td>Parking during think time is a known technique</td></tr>
+<tr><td>Keep-alive and prewarm from predicted idle time</td><td>Serverless in the Wild [13]; SpecBox [33]</td><td>Our parking policy reuses these ideas</td></tr>
+<tr><td>GPU suspend/resume, packing, memory swapping</td><td>Gandiva [14], AntMan [15], Salus [16], Torpor [17]</td><td>Sharing and swapping GPU state are means, not contributions</td></tr>
+<tr><td>Transparent GPU checkpoint/restore</td><td>cuda-checkpoint [18], PhoenixOS [19], GCR [20]</td><td>We use cuda-checkpoint as-is</td></tr>
+<tr><td>GPU sharing distorts agent timing measurements</td><td>KREX [1] (region-granular exclusivity; single node; ranks on replayed trajectories)</td><td>The timing channel alone is KREX's result</td></tr>
+<tr><td>Infrastructure configuration changes agent outcomes</td><td>Anthropic "Infrastructure noise" [21] (CPU/RAM limits: +6 pp on Terminal-Bench; strategies change above 3× headroom)</td><td>The effect is known for CPU/RAM in evals; we study GPU tools, platform policies, and demand</td></tr>
+<tr><td>Scheduling agents' tool commands on a shared host to avoid OOM</td><td>ToolSched [22] (single host, CPU/memory, resource hints over MCP)</td><td>We do not claim OOM-aware tool scheduling</td></tr>
+<tr><td>KV-cache retention and offload across tool waits</td><td>TokenCake [24], Continuum [25], NVIDIA Dynamo agent hints [26]</td><td>Provider-side; outside our perspective (LLM is opaque)</td></tr>
+<tr><td>Agents are serverless workloads; state breaks the FaaS contract</td><td>[7], [8]</td><td>Background (§1.2)</td></tr>
+</table>
+<p class="meta">Searches cannot prove absence: "not found" in §4 means not found in arXiv, USENIX and ACM searches up to 16 Nov 2026.</p>
+
+<!-- ====================================================== -->
+<h2>4. Thesis and contributions</h2>
+
+<h3>4.1 The principle: agent tool demand is endogenous</h3>
+<p><b>Classic assumption.</b> FaaS and HPC schedulers assume demand is <i>exogenous</i>: requests arrive, and each request carries a fixed amount of work. The scheduler can make a request faster or cheaper, but cannot change how many requests come next or what they compute.</p>
+<p><b>What agents change.</b> A tool's output becomes the agent's next prompt, and the agent decides the next call from it. If the platform perturbs the output, the agent changes course:</p>
+<ul>
+  <li>a noisy timing makes it keep a slower kernel or try more variants;</li>
+  <li>an OOM makes it shrink the problem;</li>
+  <li>a restore delay that hits a timeout makes it retry;</li>
+  <li>a different GPU model makes it tune for the wrong hardware.</li>
+</ul>
+<p>So the scheduler partly creates the demand it then schedules, and influences the quality of the result.</p>
+<figure>
+<svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Closed loop between platform policy and agent behaviour">
+  <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#444"/></marker></defs>
+  <g font-size="12">
+  <rect x="30" y="20" width="380" height="96" rx="8" fill="#fff4e8" stroke="#e08a2c"/>
+  <text x="44" y="42" font-weight="600">1 · Platform policy</text><text x="44" y="62">sharing level, HBM headroom, park/restore,</text><text x="44" y="78">device placement, admission</text><text x="44" y="98" fill="#555">(what serverless and HPC schedulers decide)</text>
+  <rect x="550" y="20" width="380" height="96" rx="8" fill="#eef2fb" stroke="#3b6bd6"/>
+  <text x="564" y="42" font-weight="600">2 · What the agent observes</text><text x="564" y="62">kernel timings, OOM and errors, tool latency</text><text x="564" y="78">and timeouts, which GPU it got</text>
+  <rect x="550" y="200" width="380" height="96" rx="8" fill="#eef2fb" stroke="#3b6bd6"/>
+  <text x="564" y="222" font-weight="600">3 · What the agent does next</text><text x="564" y="242">picks another candidate, shrinks the problem,</text><text x="564" y="258">retries, falls back to CPU, gives up</text>
+  <rect x="30" y="200" width="380" height="96" rx="8" fill="#f7e3e3" stroke="#c43b3b"/>
+  <text x="44" y="222" font-weight="600">4 · Demand and outcome</text><text x="44" y="242">tool calls per task, GPU-s and joules per</text><text x="44" y="258">solved task, final quality (speedup, success)</text>
+  <line x1="410" y1="60" x2="548" y2="60" stroke="#444" marker-end="url(#a3)"/>
+  <text x="420" y="50" fill="#2e8b57">known [1][22]</text>
+  <line x1="740" y1="116" x2="740" y2="198" stroke="#444" marker-end="url(#a3)"/>
+  <text x="750" y="152" fill="#2e8b57">known in part [1][21]</text>
+  <line x1="548" y1="250" x2="412" y2="250" stroke="#c43b3b" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="420" y="240" fill="#c43b3b" font-weight="600">not quantified</text><text x="420" y="276" fill="#c43b3b">for GPU tools</text>
+  <line x1="220" y1="198" x2="220" y2="118" stroke="#c43b3b" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="230" y="152" fill="#c43b3b" font-weight="600">not studied: the scheduler</text><text x="230" y="168" fill="#c43b3b">reacts to demand it created</text>
+  </g>
+</svg>
+<figcaption>Figure 3. The loop.
+<ul>
+  <li><b>1→2 (known):</b> sharing distorts timings [1]; contention causes OOM [22].</li>
+  <li><b>2→3 (known in part):</b> distorted timings mislead kernel search [1]; tighter CPU/RAM limits change agent strategies [21].</li>
+  <li><b>3→4→1 (open):</b> how the changed behaviour turns into GPU demand and outcome quality, and how the scheduler then reacts to demand it created. Not documented for GPU tools in what we found.</li>
+</ul></figcaption>
+</figure>
+
+<h3>4.2 Contributions</h3>
+<table>
+<tr><th>Contribution</th><th>Underlying principle</th><th>Why bare metal or naive serverless misses it</th><th>Delta over closest work</th></tr>
+<tr><td><b>C1 · Measure the loop for GPU tools.</b> For kernel agents (KernelBench) and science agents (ChemGraph + MACE), vary sharing level, HBM headroom, restore delay and device class. Record observations, trajectories, outcomes and GPU cost.</td><td>Endogenous demand (§4.1)</td><td>Both measure per call or per job, so they never see the trajectory change</td><td>[21]: CPU/RAM limits vs eval success. [1]: timing vs rank on replays. Ours: GPU tools, platform policies, demand and outcome together</td></tr>
+<tr><td><b>C2 · Outcome-normalized efficiency.</b> Judge an agent platform by GPU-seconds and joules per solved task at equal outcome quality.</td><td>If demand depends on policy, per-call throughput can rise while cost per useful result also rises (more retries, worse kernels). Energy matters too: allocated but idle GPUs still draw substantial power, 10.7% of cluster GPU energy in one measurement [32].</td><td>Serverless reports throughput, p99, utilization; HPC reports job throughput</td><td>No serverless or HPC paper found using outcome per GPU-second for agent tools</td></tr>
+<tr><td><b>C3 · Observation-preserving admission.</b> Share or park a session's GPU state only while its declared observation channels stay within tolerance (Figure 4).</td><td>Protect the agent's input; then maximize packing</td><td>Naive packing maximizes utilization and breaks observations; exclusive allocation keeps observations at ~3% utilization</td><td>[1] protects timing on one node. [22] avoids OOM on one CPU host. Ours: several channels, GPU memory tiers, cluster-level</td></tr>
+</table>
+
+<h3>4.3 How C3 works, and why memory capacity and bandwidth set its limits</h3>
+<figure>
+<svg viewBox="0 0 960 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Observation-preserving admission">
+  <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#444"/></marker></defs>
+  <g font-size="12">
+  <rect x="20" y="30" width="200" height="110" rx="8" fill="#eef2fb" stroke="#3b6bd6"/>
+  <text x="32" y="52" font-weight="600">Tool call declares</text><text x="32" y="72">timing-critical? (yes/no)</text><text x="32" y="90">GPU memory need</text><text x="32" y="108">target GPU class</text><text x="32" y="126">state to keep warm (S)</text>
+  <line x1="220" y1="85" x2="258" y2="85" stroke="#444" marker-end="url(#a4)"/>
+  <rect x="260" y="20" width="330" height="130" rx="8" fill="#fff4e8" stroke="#e08a2c"/>
+  <text x="272" y="42" font-weight="600">Admission checks (one per observation channel)</text>
+  <text x="272" y="62">① timing: needs an exclusive window?</text>
+  <text x="272" y="80">② memory: co-location leaves headroom (no OOM)?</text>
+  <text x="272" y="98">③ latency: parked state returns within the</text><text x="290" y="114">predicted think time (2S / B_tier &lt; t_think)?</text>
+  <text x="272" y="134">④ device: placed on its target GPU class?</text>
+  <line x1="590" y1="85" x2="628" y2="85" stroke="#444" marker-end="url(#a4)"/>
+  <rect x="630" y="20" width="310" height="130" rx="8" fill="#f2faf5" stroke="#2e8b57"/>
+  <text x="642" y="42" font-weight="600">Decision</text><text x="642" y="62">co-locate (MPS share) · park in a tier</text><text x="642" y="80">exclusive timing window · queue</text><text x="642" y="104" fill="#555">mechanisms reused: MPS, cuda-checkpoint</text><text x="642" y="120" fill="#555">[14]–[20]; timing windows as in [1]</text>
+  <text x="20" y="182" font-weight="600">Capacity per GPU under these checks is bounded by memory:</text>
+  <rect x="20" y="196" width="440" height="40" rx="6" fill="#3b6bd6"/><text x="32" y="220" fill="#fff">② HBM headroom → how many sessions stay resident without OOM</text>
+  <rect x="20" y="244" width="440" height="40" rx="6" fill="#5a7fd8"/><text x="32" y="268" fill="#fff">③ tier bandwidth B → how much state can be parked and returned in time</text>
+  <rect x="20" y="292" width="440" height="40" rx="6" fill="#d3dcf2"/><text x="32" y="316">so: sessions per GPU = f(HBM capacity, C2C / PCIe / NVMe bandwidth)</text>
+  <text x="500" y="210" font-weight="600">Tier ladder (spec values)</text>
+  <text x="500" y="232">HBM3E: H200 141 GB, 4.8 TB/s · B200 ~180 GB, 8 TB/s · H100 80 GB, 3.35 TB/s</text>
+  <text x="500" y="254">Grace LPDDR5X over NVLink-C2C: 480 GB, 900 GB/s (bidir.)</text>
+  <text x="500" y="276">Host DDR over PCIe Gen5 x16: ≈64 GB/s per direction</text>
+  <text x="500" y="298">Gen5 NVMe SSD: ≈14 GB/s sequential read per drive (vendor)</text>
+  <text x="500" y="320" fill="#555">Example [INF]: S = 4 GB → ≈0.13 s over PCIe, ≈18 ms over C2C, ≈0.6 s from NVMe</text>
+  </g>
+</svg>
+<figcaption>Figure 4. C3: observation-preserving admission.</figcaption>
+</figure>
+<p><b>Principle.</b> Once observations are protected, packing more sessions onto a GPU is no longer limited by compute; tools leave most of it idle (Figure 2; [1][31]). It is limited by two memory quantities:</p>
+<ul>
+  <li><b>HBM headroom</b>, which decides how many sessions' warm state can stay resident without OOM;</li>
+  <li><b>tier bandwidth</b>, which decides whether parked state can return within the agent's think time.</li>
+</ul>
+<p>That makes memory capacity and bandwidth first-order factors in <i>outcome-normalized</i> platform efficiency (C2), not only in raw utilization. This is the claim to test for the memory/storage portfolio. A capacity sweep alone would only be a characterization; prior work already shows more HBM holds more state [17][23].</p>
+
+<div class="risk"><b>Kill criterion.</b> If live runs show that agent outcomes and demand do not respond to platform policy, apart from the timing channel [1] already covers, the thesis reduces to [1] + [9]. We then pivot (Appendix B) after a fresh novelty check.</div>
+
+<!-- ====================================================== -->
+<h2>5. How we test it</h2>
+
+<h3>5.1 Setup</h3>
+<ul>
+  <li><b>Three machines in every run, as in production:</b>
+    <ul>
+      <li>LLM: Qwen3-Coder-30B-A3B, BF16, NVIDIA Dynamo 1.6.2 on the A100-DGX;</li>
+      <li>harness on an x86 server;</li>
+      <li>tools on H100 / H200 / GH200 nodes.</li>
+    </ul></li>
+  <li><b>Dynamo 1.6.2</b> is the last release line that ships the KV Block Manager (deprecated in 1.5.0, removal targeted for 1.7.0) [39]. We do not use it, because the LLM is treated as opaque.</li>
+  <li><b>Workloads</b> (open source, widely used):
+    <ul>
+      <li>KernelBench [36] driven by mini-SWE-agent [37] (timing-critical calls);</li>
+      <li>ChemGraph [35] with MACE GPU calculators (calls that produce results).</li>
+    </ul></li>
+  <li><b>Rules:</b>
+    <ul>
+      <li>the same task population, GPU budget and LLM across policies;</li>
+      <li>outcomes re-measured on an idle GPU (kernels) or scored by ChemGraph's judge;</li>
+      <li>n ≥ 3 seeds;</li>
+      <li>memory settings anchored at real product sizes (80 / 96 / 141 GB HBM);</li>
+      <li>no arbitrary SLOs;</li>
+      <li>unmodified baselines.</li>
+    </ul></li>
+</ul>
+
+<h3>5.2 Hypotheses and experiments</h3>
+<table>
+<tr><th>ID</th><th>Hypothesis</th><th>Experiment (script)</th><th>If false</th></tr>
+<tr><td>H6</td><td>Platform policy changes agent behaviour: GPU tool calls, errors seen, strategy</td><td rowspan="3"><b>M5 · policy loop</b> (<code>m5_policy/</code>). Same tasks under: exclusive; 2/4/8 sessions per GPU (± MPS); HBM capped at 80/96/141 GB; naive park/restore</td><td>Kill criterion</td></tr>
+<tr><td>H7</td><td>Classic and outcome-normalized metrics disagree (tool calls per GPU-hour ↑ while solved tasks per GPU-hour ↓)</td><td>C2 becomes a methodology note</td></tr>
+<tr><td>H8</td><td>The gap between perceived and true kernel speedup grows with sharing (live, end to end; [1] measured replays)</td><td>The timing channel is benign at these sharing levels</td></tr>
+<tr><td>H1</td><td>Under exclusive allocation, tool GPUs idle through remote-LLM think time</td><td>M1 · session anatomy (<code>m1_sessions/</code>)</td><td>No headroom to share</td></tr>
+<tr><td>H3</td><td>Think time exceeds park + restore of the tool state S</td><td>M2 · park/restore per tier (<code>m2_park_restore/</code>)</td><td>Keep state resident</td></tr>
+<tr><td>H2, H4</td><td>Sharing capacity is set by HBM capacity (H2) and bandwidth (H4) rather than compute</td><td>M3 · headroom on capped H200 vs H100 (<code>m3_headroom/</code>)</td><td>The memory link weakens; report it</td></tr>
+<tr><td>H5</td><td>Timing-critical calls need exclusive windows</td><td>M4 · fidelity (<code>m4_fidelity/</code>)</td><td>Simplify C3 check ①</td></tr>
+</table>
+<p><b>First decision:</b> run one seed of <i>exclusive</i> vs <i>8 sessions per GPU</i> on KernelBench. That pair settles H6 before the full grid is spent. Run book: <code>motivation/PLAN.md</code>.</p>
+
+<!-- ====================================================== -->
+<h2>6. Venue and timeline</h2>
+<ul>
+  <li><b>ICS'27</b> [38]: abstract 1 Dec, paper 7 Dec 2026; 11 pages; Atlanta (FCRC), June 2027.</li>
+  <li><b>Scope rule:</b> desk-reject if HPC appears only in the motivation. The CFP asks whether an HPC operator could make a different decision from the results. Our results tell a facility operator how to run agents' GPU tools.</li>
+  <li><b>Fallbacks:</b> HPDC'27 (typically mid-January) or SC27 (typically spring); neither is announced yet.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 920 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Timeline">
+  <g font-size="12">
+  <line x1="40" y1="80" x2="890" y2="80" stroke="#555"/>
+  <g fill="#555"><text x="40" y="100">Nov '26</text><text x="160" y="100">Jan '27</text><text x="280" y="100">Mar</text><text x="400" y="100">May</text><text x="520" y="100">Jul</text><text x="640" y="100">Sep</text><text x="760" y="100">Nov</text></g>
+  <rect x="62" y="48" width="34" height="14" fill="#3b6bd6"/><text x="40" y="40" fill="#3b6bd6">M5 kill check + M1/M2</text>
+  <rect x="100" y="48" width="230" height="14" fill="#cfd8ea"/><text x="200" y="40">full M5 grid, C3 system</text>
+  <circle cx="108" cy="80" r="7" fill="#c43b3b"/><text x="80" y="125" fill="#c43b3b" font-weight="600">ICS'27 · 7 Dec</text>
+  <circle cx="186" cy="80" r="7" fill="none" stroke="#555" stroke-width="2" stroke-dasharray="3 2"/><text x="190" y="125">HPDC'27 (expected)</text>
+  <circle cx="360" cy="80" r="7" fill="none" stroke="#555" stroke-width="2" stroke-dasharray="3 2"/><text x="340" y="140">SC27 (expected)</text>
+  <text x="560" y="40" fill="#333">filled = confirmed deadline; dashed = typical date</text>
+  </g>
+</svg>
+<figcaption>Figure 5. ICS'27 is realistic only if the M5 kill check and M1/M2 run this month.</figcaption>
+</figure>
+
+<!-- ====================================================== -->
+<details><summary>Appendix A — the six recommended SC26 papers, and what they leave open</summary>
+<table>
+<tr><th>Paper</th><th>Takeaway</th><th>Gap relevant to us</th></tr>
+<tr><td>eFaaS [40]</td><td>eBPF / kernel-bypass FaaS for bursty HPC workflows; 8 nodes</td><td>No GPU, state or agents</td></tr>
+<tr><td>HolyDiver [41]</td><td>Carbon- and water-aware serverless scheduling; 10 regions</td><td>CPU only</td></tr>
+<tr><td>Hybrid HPC–serverless task placement [42]</td><td>Static candidacy plus placement for workflows</td><td>Accelerators named as future work</td></tr>
+<tr><td>AAFLOW+ [43]</td><td>KV cache as a distributed object for multi-agent workflows (modeled results)</td><td>Provider-side KV; no tools</td></tr>
+<tr><td>CoreFlow [44]</td><td>Context-centric GPU allocation for agent workflows; 32 GPUs</td><td>LLM side; whole-GPU granularity</td></tr>
+<tr><td>SZ-Bench / SZ-Gen [45]</td><td>HPC kernel agents on V100 / MI300 / Cerebras; hundreds of profile/validate iterations</td><td>Exactly the GPU-tool workload we target</td></tr>
+</table>
+</details>
+
+<details><summary>Appendix B — directions considered and set aside (pivot options)</summary>
+<table>
+<tr><th>Direction</th><th>Why not first</th></tr>
+<tr><td>Surrogate inference as shared functions for AI-coupled simulations</td><td>Strong HPC fit, but needs partners with production coupled codes. Per-timestep latency may force co-location (SmartSim). Main pivot option.</td></tr>
+<tr><td>A harvest-function contract plus energy per useful operation (filling decode slack)</td><td>Mechanisms are crowded: Valve [30], ConServe [30], "The GPU Needs an OS" [31]. Also needs the operator to host the LLM, which is our follow-up "Mode B".</td></tr>
+<tr><td>Joint KV + sandbox state management</td><td>Provider-side and cloud-centric; strong groups active [11][12][24][25]</td></tr>
+<tr><td>HPC-native agent substrate on Slurm</td><td>Risks being integration work. RASER [34] covers job arrays; kept as our deployment context.</td></tr>
+<tr><td>Functions inside AI workloads (LoRA, MoE experts, RL rewards, drafters)</td><td>Already done (e.g., ServerlessLoRA, MoEless, RollArt)</td></tr>
+</table>
+</details>
+
+<!-- ====================================================== -->
+<h2>References</h2>
+<ol class="refs">
+<li>T. Feng et al., "KREX: Concurrent Kernel Benchmarking on Shared GPUs via Region-Granular Exclusivity," arXiv:2609.30057, 2026. <a href="https://arxiv.org/abs/2609.30057">link</a></li>
+<li>W. Dai et al., "CUDA Agent: Large-Scale Agentic RL for High-Performance CUDA Kernel Generation," arXiv:2602.24286, 2026. <a href="https://arxiv.org/abs/2602.24286">link</a></li>
+<li>MLC, "KCoral: Lightweight Benchmark Server for Agentic GPU Programming," 2026. <a href="https://kcoral.mlc.ai/">link</a></li>
+<li>Y. Zheng et al., "Towards Efficient HPC Systems for Agents: Challenges and Opportunities," arXiv:2609.38723, 2026. <a href="https://arxiv.org/abs/2609.38723">link</a></li>
+<li>K. Zhu et al., "TraceLab: Characterizing Coding Agent Workloads for LLM Serving," arXiv:2606.30560, 2026. <a href="https://arxiv.org/abs/2606.30560">link</a></li>
+<li>HarvardMadSys, "FreeInference Agentic Trace," 2026. <a href="https://github.com/HarvardMadSys/freeinference_agentic_trace">link</a></li>
+<li>B. Asoodeh, A. Noohi, A. Barbalace, "Is Serverless a Misfit for Agentic AI?," WoAIS2, 2026. <a href="https://noohi.org/publications/serverless-agentic-ai">link</a></li>
+<li>I. Dougherty et al., "Agentic Workflows are Serverless Applications, so deploy them that way!," ACM SIGOPS OSR, 2026. <a href="https://people.ece.ubc.ca/sasha/papers/sigops-2026.pdf">link</a></li>
+<li>Y. Wu et al., "LooseLeaf: Enabling Serverless GPUs for Computational Notebooks," arXiv:2610.33275, 2026. <a href="https://arxiv.org/abs/2610.33275">link</a></li>
+<li>B. Carver et al., "NotebookOS: A Replicated Notebook Platform for Interactive Training with On-Demand GPUs," ACM, 2025; arXiv:2503.20591. <a href="https://dl.acm.org/doi/10.1145/3760250.3762230">link</a></li>
+<li>T. Wu et al., "Crab: A Semantics-Aware Checkpoint/Restore Runtime for Agent Sandboxes," arXiv:2604.28138, 2026. <a href="https://arxiv.org/abs/2604.28138">link</a></li>
+<li>Y. Dong et al., "DeltaBox: Scaling Stateful AI Agents with Millisecond-Level Sandbox Checkpoint/Rollback," arXiv:2605.22781, 2026. <a href="https://arxiv.org/abs/2605.22781">link</a></li>
+<li>M. Shahrad et al., "Serverless in the Wild," USENIX ATC, 2020. <a href="https://www.usenix.org/conference/atc20/presentation/shahrad">link</a></li>
+<li>W. Xiao et al., "Gandiva: Introspective Cluster Scheduling for Deep Learning," OSDI, 2018. <a href="https://www.usenix.org/conference/osdi18/presentation/xiao">link</a></li>
+<li>W. Xiao et al., "AntMan: Dynamic Scaling on GPU Clusters for Deep Learning," OSDI, 2020. <a href="https://www.usenix.org/conference/osdi20/presentation/xiao">link</a></li>
+<li>P. Yu, M. Chowdhury, "Salus: Fine-Grained GPU Sharing Primitives for Deep Learning Applications," MLSys, 2020. <a href="https://proceedings.mlsys.org/paper_files/paper/2020/hash/d9cd83bc91b8c36a0c7c0fcca59228f2-Abstract.html">link</a></li>
+<li>M. Yu et al., "Torpor: GPU-Enabled Serverless Computing for Low-Latency, Resource-Efficient Inference," USENIX ATC, 2025 †. <a href="https://www.usenix.org/conference/atc25/presentation/yu">link</a></li>
+<li>NVIDIA, "cuda-checkpoint," 2025–2026. <a href="https://github.com/NVIDIA/cuda-checkpoint">link</a></li>
+<li>X. Huang et al., "PhoenixOS: Concurrent OS-level GPU Checkpoint and Restore with Validated Speculation," SOSP, 2025. <a href="https://dl.acm.org/doi/10.1145/3731569.3764813">link</a></li>
+<li>"GPU Checkpoint/Restore Made Fast and Lightweight (GCR)," USENIX FAST, 2026 †. <a href="https://www.usenix.org/system/files/fast26-zeng.pdf">link</a></li>
+<li>G. Segato et al. (Anthropic), "Quantifying infrastructure noise in agentic coding evals," Feb 2026. <a href="https://www.anthropic.com/engineering/infrastructure-noise">link</a></li>
+<li>S. Zou et al., "ToolSched: Resource-Efficient Tool Scheduling for Shared-Host LLM Agents," arXiv:2611.05269, 2026. <a href="https://arxiv.org/abs/2611.05269">link</a></li>
+<li>Y. Fu et al., "ServerlessLLM: Low-Latency Serverless Inference for Large Language Models," OSDI, 2024. <a href="https://www.usenix.org/conference/osdi24/presentation/fu">link</a></li>
+<li>Z. Bian et al., "TokenCake: A KV-Cache-centric Serving Framework for LLM-based Multi-Agent Applications," EuroSys'27; arXiv:2510.18586. <a href="https://arxiv.org/abs/2510.18586">link</a></li>
+<li>"Continuum (CacheTTL)," arXiv:2511.02230, 2025 †. <a href="https://arxiv.org/abs/2511.02230">link</a></li>
+<li>I. Dhanani, M. Kosec (NVIDIA), "Full-Stack Optimizations for Agentic Inference with NVIDIA Dynamo," Apr 2026. <a href="https://developer.nvidia.com/blog/full-stack-optimizations-for-agentic-inference-with-nvidia-dynamo/">link</a></li>
+<li>J. Gu et al., "FaST-GShare: Enabling Efficient Spatio-Temporal GPU Sharing in Serverless Clouds," ICPP, 2023 †. <a href="https://arxiv.org/abs/2309.00558">link</a></li>
+<li>"DGSF: Disaggregated GPUs for Serverless Functions," IPDPS, 2022 †. <a href="https://par.nsf.gov/servlets/purl/10340800">link</a></li>
+<li>S. Zeng et al., "Medusa: Accelerating Serverless LLM Inference with Materialization," ASPLOS, 2025 †. <a href="https://dl.acm.org/doi/10.1145/3669940.3707285">link</a></li>
+<li>"Valve: Production Online-Offline Inference Colocation," arXiv:2604.07874, 2026; Y. Qiao et al., "ConServe," arXiv:2410.01228 †. <a href="https://arxiv.org/abs/2604.07874">link</a></li>
+<li>R. Nourai, "The GPU Needs an Operating System," arXiv:2611.08720, 2026. <a href="https://arxiv.org/abs/2611.08720">link</a></li>
+<li>Y. Lei et al., "The Energy Cost of Execution-Idle in GPU Clusters," arXiv:2604.04745, 2026. <a href="https://arxiv.org/abs/2604.04745">link</a></li>
+<li>Y. Zhang et al., "SpecBox: Speculative Sandbox Scheduling for Efficient LLM Agent Serving," arXiv:2607.23933, 2026. <a href="https://arxiv.org/abs/2607.23933">link</a></li>
+<li>S. Attar-Khorasani et al., "RASER: Resilient Agent Scheduling and Execution Runtime for HPC Clusters," arXiv:2609.03598, 2026. <a href="https://arxiv.org/abs/2609.03598">link</a></li>
+<li>T. Pham et al., "ChemGraph as an agentic framework for computational chemistry workflows," Communications Chemistry, 2025. <a href="https://www.nature.com/articles/s42004-025-01776-9">link</a></li>
+<li>A. Ouyang et al., "KernelBench," 2025. <a href="https://github.com/ScalingIntelligence/KernelBench">link</a></li>
+<li>SWE-agent team, "mini-SWE-agent." <a href="https://github.com/SWE-agent/mini-swe-agent">link</a></li>
+<li>ICS 2027 Call for Papers. <a href="https://klab-ai3.github.io/ics2027/calls-cfp.html">link</a></li>
+<li>NVIDIA Dynamo release notes v1.5.0 (KVBM deprecation) and v1.6.2. <a href="https://github.com/ai-dynamo/dynamo/releases">link</a></li>
+<li>Z. Huang et al., "eFaaS: A Lightweight, Kernel-Bypass Serverless Framework for HPC Workloads," SC, 2026 (local PDF 478900c620).</li>
+<li>R. Basu Roy et al., "HolyDiver: Water and Carbon Footprint-Aware Serverless Computing," SC, 2026 (local PDF 478900b223).</li>
+<li>V. Thurimella et al., "Automated Task Placement for Hybrid HPC-Serverless Workflows," SC Workshops, 2026 (local PDF 122100c902).</li>
+<li>A. K. Sarker et al., "AAFLOW+," SC Workshops, 2026 (local PDF 122100d398); arXiv:2607.10987.</li>
+<li>J. Liao et al., "CoreFlow: Context-Centric Resource Management for LLM-based Agentic Workflows," SC, 2026 (local PDF 478900b013).</li>
+<li>C. Li et al., "LLM Agents Meet Lossy Compression: Benchmark, Demystify and Optimize across HPC Architectures," SC, 2026 (local PDF 478900b814).</li>
+</ol>
+
+</body>
+</html>

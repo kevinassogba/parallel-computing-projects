@@ -1,0 +1,18 @@
+You are optimizing a PyTorch program with custom CUDA kernels.
+
+The working directory contains:
+- ref.py: the reference PyTorch program (class Model, plus get_inputs() and get_init_inputs()).
+- example_ref.py and example_new.py: a worked example. example_new.py defines ModelNew,
+  which replaces an operator with an inline CUDA kernel built by torch.utils.cpp_extension.load_inline.
+
+Task: write model_new.py defining class ModelNew, with the same interface and outputs as Model in
+ref.py, that is faster than the reference on this GPU. Replace operators with custom CUDA kernels
+(operator fusion and algorithmic changes are allowed). Do not call the reference Model.
+
+Evaluate a candidate with:
+    kb_eval model_new.py
+It compiles your kernel, checks correctness against ref.py on random inputs, and reports the custom
+kernel time and the speedup over PyTorch eager and torch.compile.
+
+Iterate: inspect, edit, evaluate. Stop when the kernel is correct and faster than torch.compile,
+or after {max_evals} evaluations, whichever comes first. Then submit.

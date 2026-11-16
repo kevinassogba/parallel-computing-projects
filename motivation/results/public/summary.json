@@ -1,0 +1,62 @@
+{
+  "fi_llm_latency_s": {
+    "n": 1222199,
+    "p10": 1.037,
+    "p50": 4.556,
+    "p90": 19.165,
+    "p99": 82.03602000000002,
+    "mean": 9.189030342031092
+  },
+  "tl_tool_latency_s": {
+    "n": 743050,
+    "p50": 0.218,
+    "p90": 10.052,
+    "p99": 151.61357000000007
+  },
+  "tracelab_autonomous_window_s": {
+    "n": 547211,
+    "p50": 5.867000102996826,
+    "p10": 2.2159998416900635,
+    "p90": 20.581000089645386,
+    "share_ge_1s": 0.9626597418546046,
+    "share_ge_2s": 0.9189489977357911,
+    "share_ge_5s": 0.5772928541275669
+  },
+  "tracelab_windows_with_user_turn": 45439,
+  "freeinference_autonomous_window_s": {
+    "n": 1059273,
+    "p50": 4.298,
+    "p10": 1.004,
+    "p90": 17.333,
+    "share_ge_1s": 0.9009650958723577,
+    "share_ge_2s": 0.7311089775723538,
+    "share_ge_5s": 0.4484651265537779
+  },
+  "freeinference_windows_with_user_turn": 53700,
+  "tl_session_tool_busy_frac": {
+    "n_sessions": 6284,
+    "p10": 0.0028335996680236347,
+    "p50": 0.04911519122574626,
+    "p90": 0.5698695966228158,
+    "mean": 0.25479961352934843,
+    "time_weighted": 0.051289927346835414
+  },
+  "tl_session_tool_busy_frac_active_time": {
+    "n_sessions": 5251,
+    "p10": 0.008199785858875786,
+    "p50": 0.22994249736642802,
+    "p90": 0.8225522079752832,
+    "mean": 0.3252125731286906,
+    "time_weighted": 0.6620900354544719
+  },
+  "fi_gpu_program_calls": {
+    "calls": 538,
+    "share_of_shell_calls": 0.0007868315405371808,
+    "sessions": 168,
+    "share_of_sessions": 0.013574660633484163
+  },
+  "tl_gpu_program_calls": {
+    "calls": 13492,
+    "share_of_shell_calls": 0.031963913850002725
+  }
+}

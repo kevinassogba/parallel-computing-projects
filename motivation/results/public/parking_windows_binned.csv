@@ -1,0 +1,17 @@
+trace,bin,n
+tracelab,>300,210
+tracelab,0-1,20433
+tracelab,10-30,116552
+tracelab,2-5,186958
+tracelab,5-10,167784
+tracelab,30-60,22406
+tracelab,1-2,23919
+tracelab,60-300,8949
+freeinference,0-1,104905
+freeinference,60-300,15532
+freeinference,1-2,179924
+freeinference,5-10,249479
+freeinference,30-60,30901
+freeinference,2-5,299397
+freeinference,10-30,178073
+freeinference,>300,1062
